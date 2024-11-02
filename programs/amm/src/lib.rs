@@ -23,13 +23,16 @@ solana_security_txt::security_txt! {
 
 #[cfg(feature = "devnet")]
 declare_id!("devi51mZmdwUJGU9hjN27vEz64Gps7uUefqxg27EAtH");
+#[cfg(not(feature = "devnet"))]
+declare_id!("devi51mZmdwUJGU9hjN27vEz64Gps7uUefqxg27EAtH");
 
 pub mod admin {
     use anchor_lang::prelude::declare_id;
     #[cfg(feature = "devnet")]
     declare_id!("adMCyoCgfkg7bQiJ9aBJ59H3BXLY3r5LNLfPpQfMzBe");
+    #[cfg(not(feature = "mainnet"))]
+    declare_id!("adMCyoCgfkg7bQiJ9aBJ59H3BXLY3r5LNLfPpQfMzBe");
 }
-
 #[program]
 pub mod amm_v3 {
 
