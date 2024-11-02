@@ -30,7 +30,7 @@ pub mod admin {
     use anchor_lang::prelude::declare_id;
     #[cfg(feature = "devnet")]
     declare_id!("adMCyoCgfkg7bQiJ9aBJ59H3BXLY3r5LNLfPpQfMzBe");
-    #[cfg(not(feature = "mainnet"))]
+    #[cfg(not(feature = "devnet"))]
     declare_id!("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
 }
 
