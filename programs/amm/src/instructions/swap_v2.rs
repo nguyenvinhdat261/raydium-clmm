@@ -127,7 +127,6 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
         );
 
         let mut tickarray_bitmap_extension = None;
-        let tick_array_states = &mut VecDeque::new();
 
         let tick_array_bitmap_extension_key = TickArrayBitmapExtension::key(pool_state.key());
         for account_info in remaining_accounts.into_iter() {
