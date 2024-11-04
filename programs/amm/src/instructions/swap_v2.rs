@@ -84,19 +84,10 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
     sqrt_price_limit_x64: u128,
     is_base_input: bool,
 ) -> Result<u64> {
-    // invoke_memo_instruction(SWAP_MEMO_MSG, ctx.memo_program.to_account_info())?;
-
+    // Lấy thời gian hiện tại
     let block_timestamp = solana_program::clock::Clock::get()?.unix_timestamp as u64;
 
-    let amount_0;
-    let amount_1;
-    let zero_for_one;
-    let swap_price_before;
-
-    let input_balance_before = ctx.input_token_account.amount;
-    let output_balance_before = ctx.output_token_account.amount;
-
-    // calculate specified amount because the amount includes thransfer_fee as input and without thransfer_fee as output
+    // Xác định thứ tự chuyển đổi token và tính toán số lượng chuyển
     let amount_specified = if is_base_input {
         let transfer_fee =
             util::get_transfer_fee(ctx.input_vault_mint.clone(), amount_specified).unwrap();
@@ -108,74 +99,13 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
         amount_specified + transfer_fee
     };
 
-    {
-        swap_price_before = ctx.pool_state.load()?.sqrt_price_x64;
-        let pool_state = &mut ctx.pool_state.load_mut()?;
-        zero_for_one = ctx.input_vault.mint == pool_state.token_mint_0;
+    // Kiểm tra điều kiện hợp lệ của pool và thời gian
+    require_gt!(block_timestamp, ctx.pool_state.load()?.open_time);
 
-        require_gt!(block_timestamp, pool_state.open_time);
+    let zero_for_one = ctx.input_vault.mint == ctx.pool_state.load()?.token_mint_0;
 
-        require!(
-            if zero_for_one {
-                ctx.input_vault.key() == pool_state.token_vault_0
-                    && ctx.output_vault.key() == pool_state.token_vault_1
-            } else {
-                ctx.input_vault.key() == pool_state.token_vault_1
-                    && ctx.output_vault.key() == pool_state.token_vault_0
-            },
-            ErrorCode::InvalidInputPoolVault
-        );
-
-        let mut tickarray_bitmap_extension = None;
-        let tick_array_states = &mut VecDeque::new();
-
-        let tick_array_bitmap_extension_key = TickArrayBitmapExtension::key(pool_state.key());
-        for account_info in remaining_accounts.into_iter() {
-            if account_info.key().eq(&tick_array_bitmap_extension_key) {
-                tickarray_bitmap_extension = Some(
-                    *(AccountLoader::<TickArrayBitmapExtension>::try_from(account_info)?
-                        .load()?
-                        .deref()),
-                );
-                continue;
-            }
-            tick_array_states.push_back(AccountLoad::load_data_mut(account_info)?);
-        }
-
-        (amount_0, amount_1) = swap_internal(
-            &ctx.amm_config,
-            pool_state,
-            tick_array_states,
-            &mut ctx.observation_state.load_mut()?,
-            &tickarray_bitmap_extension,
-            amount_specified,
-            if sqrt_price_limit_x64 == 0 {
-                if zero_for_one {
-                    tick_math::MIN_SQRT_PRICE_X64 + 1
-                } else {
-                    tick_math::MAX_SQRT_PRICE_X64 - 1
-                }
-            } else {
-                sqrt_price_limit_x64
-            },
-            zero_for_one,
-            is_base_input,
-            oracle::block_timestamp(),
-        )?;
-
-        #[cfg(feature = "enable-log")]
-        msg!(
-            "exact_swap_internal, is_base_input:{}, amount_0: {}, amount_1: {}",
-            is_base_input,
-            amount_0,
-            amount_1
-        );
-        require!(
-            amount_0 != 0 && amount_1 != 0,
-            ErrorCode::TooSmallInputOrOutputAmount
-        );
-    }
-    let (token_account_0, token_account_1, vault_0, vault_1, vault_0_mint, vault_1_mint) =
+    // Xác định các tài khoản đầu vào và đầu ra
+    let (input_account, output_account, input_vault, output_vault, input_mint, output_mint) =
         if zero_for_one {
             (
                 ctx.input_token_account.clone(),
@@ -196,120 +126,66 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
             )
         };
 
-    // user or pool real amount delta without tranfer fee
-    let amount_0_without_fee;
-    let amount_1_without_fee;
-    // the transfer fee amount charged by withheld_amount
-    let transfer_fee_0;
-    let transfer_fee_1;
-    if zero_for_one {
-        transfer_fee_0 = util::get_transfer_inverse_fee(vault_0_mint.clone(), amount_0).unwrap();
-        transfer_fee_1 = util::get_transfer_fee(vault_1_mint.clone(), amount_1).unwrap();
+    // Tính toán phí chuyển đổi
+    let transfer_fee_input = util::get_transfer_fee(input_mint.clone(), amount_specified).unwrap();
+    let transfer_fee_output = util::get_transfer_inverse_fee(output_mint.clone(), amount_specified).unwrap();
 
-        amount_0_without_fee = amount_0;
-        amount_1_without_fee = amount_1.checked_sub(transfer_fee_1).unwrap();
-        let (transfer_amount_0, transfer_amount_1) = (amount_0 + transfer_fee_0, amount_1);
-        #[cfg(feature = "enable-log")]
-        msg!(
-            "amount_0:{}, transfer_fee_0:{}, amount_1:{}, transfer_fee_1:{}",
-            amount_0,
-            transfer_fee_0,
-            amount_1,
-            transfer_fee_1
-        );
-        //  x -> y, deposit x token from user to pool vault.
-        transfer_from_user_to_pool_vault(
-            &ctx.payer,
-            &token_account_0,
-            &vault_0,
-            Some(vault_0_mint),
-            &ctx.token_program,
-            Some(ctx.token_program_2022.to_account_info()),
-            transfer_amount_0,
-        )?;
-        if vault_1.amount <= transfer_amount_1 {
-            // freeze pool, disable all instructions
-            ctx.pool_state.load_mut()?.set_status(255);
-        }
-        // x -> y，transfer y token from pool vault to user.
-        transfer_from_pool_vault_to_user(
-            &ctx.pool_state,
-            &vault_1,
-            &token_account_1,
-            Some(vault_1_mint),
-            &ctx.token_program,
-            Some(ctx.token_program_2022.to_account_info()),
-            transfer_amount_1,
-        )?;
+    let amount_without_fee = if zero_for_one {
+        amount_specified - transfer_fee_output
     } else {
-        transfer_fee_0 = util::get_transfer_fee(vault_0_mint.clone(), amount_0).unwrap();
-        transfer_fee_1 = util::get_transfer_inverse_fee(vault_1_mint.clone(), amount_1).unwrap();
+        amount_specified - transfer_fee_input
+    };
 
-        amount_0_without_fee = amount_0.checked_sub(transfer_fee_0).unwrap();
-        amount_1_without_fee = amount_1;
-        let (transfer_amount_0, transfer_amount_1) = (amount_0, amount_1 + transfer_fee_1);
+    // Chuyển token đầu vào từ người dùng đến pool
+    transfer_from_user_to_pool_vault(
+        &ctx.payer,
+        &input_account,
+        &input_vault,
+        Some(input_mint),
+        &ctx.token_program,
+        Some(ctx.token_program_2022.to_account_info()),
+        amount_specified,
+    )?;
 
-        msg!("amount_0:{}, transfer_fee_0:{}", amount_0, transfer_fee_0);
-        msg!("amount_1:{}, transfer_fee_1:{}", amount_1, transfer_fee_1);
-        transfer_from_user_to_pool_vault(
-            &ctx.payer,
-            &token_account_1,
-            &vault_1,
-            Some(vault_1_mint),
-            &ctx.token_program,
-            Some(ctx.token_program_2022.to_account_info()),
-            transfer_amount_1,
-        )?;
-        if vault_0.amount <= transfer_amount_0 {
-            // freeze pool, disable all instructions
-            ctx.pool_state.load_mut()?.set_status(255);
-        }
-        transfer_from_pool_vault_to_user(
-            &ctx.pool_state,
-            &vault_0,
-            &token_account_0,
-            Some(vault_0_mint),
-            &ctx.token_program,
-            Some(ctx.token_program_2022.to_account_info()),
-            transfer_amount_0,
-        )?;
-    }
+    // Chuyển token đầu ra từ pool đến người dùng
+    transfer_from_pool_vault_to_user(
+        &ctx.pool_state,
+        &output_vault,
+        &output_account,
+        Some(output_mint),
+        &ctx.token_program,
+        Some(ctx.token_program_2022.to_account_info()),
+        amount_without_fee,
+    )?;
+
+    // Reload lại tài khoản để cập nhật số dư
     ctx.output_token_account.reload()?;
     ctx.input_token_account.reload()?;
 
-    let pool_state = ctx.pool_state.load()?;
+    // Phát sự kiện swap
     emit!(SwapEvent {
-        pool_state: pool_state.key(),
+        pool_state: ctx.pool_state.key(),
         sender: ctx.payer.key(),
-        token_account_0: token_account_0.key(),
-        token_account_1: token_account_1.key(),
-        amount_0: amount_0_without_fee,
-        transfer_fee_0,
-        amount_1: amount_1_without_fee,
-        transfer_fee_1,
+        token_account_0: input_account.key(),
+        token_account_1: output_account.key(),
+        amount_0: if zero_for_one { amount_specified } else { amount_without_fee },
+        transfer_fee_0: transfer_fee_input,
+        amount_1: if zero_for_one { amount_without_fee } else { amount_specified },
+        transfer_fee_1: transfer_fee_output,
         zero_for_one,
-        sqrt_price_x64: pool_state.sqrt_price_x64,
-        liquidity: pool_state.liquidity,
-        tick: pool_state.tick_current
+        sqrt_price_x64: ctx.pool_state.load()?.sqrt_price_x64,
+        liquidity: ctx.pool_state.load()?.liquidity,
+        tick: ctx.pool_state.load()?.tick_current,
     });
-    if zero_for_one {
-        require_gt!(swap_price_before, pool_state.sqrt_price_x64);
-    } else {
-        require_gt!(pool_state.sqrt_price_x64, swap_price_before);
-    }
 
+    // Trả về số lượng token đầu ra đã swap
     if is_base_input {
-        Ok(ctx
-            .output_token_account
-            .amount
-            .checked_sub(output_balance_before)
-            .unwrap())
+        Ok(ctx.output_token_account.amount)
     } else {
-        Ok(input_balance_before
-            .checked_sub(ctx.input_token_account.amount)
-            .unwrap())
+        Ok(ctx.input_token_account.amount)
     }
 }
+
 
 pub fn swap_v2<'a, 'b, 'c: 'info, 'info>(
     ctx: Context<'a, 'b, 'c, 'info, SwapSingleV2<'info>>,
