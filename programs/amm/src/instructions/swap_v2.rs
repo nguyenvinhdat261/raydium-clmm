@@ -126,6 +126,27 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
             ErrorCode::InvalidInputPoolVault
         );
 
+        let mut tickarray_bitmap_extension = None;
+        let tick_array_states = &mut VecDeque::new();
+
+        let tick_array_bitmap_extension_key = TickArrayBitmapExtension::key(pool_state.key());
+        for account_info in remaining_accounts.into_iter() {
+            if account_info.key().eq(&tick_array_bitmap_extension_key) {
+                tickarray_bitmap_extension = Some(
+                    *(AccountLoader::<TickArrayBitmapExtension>::try_from(account_info)?
+                        .load()?
+                        .deref()),
+                );
+                continue;
+            }
+            tick_array_states.push_back(AccountLoad::load_data_mut(account_info)?);
+        }
+
+        
+        require!(
+            amount_0 != 0 && amount_1 != 0,
+            ErrorCode::TooSmallInputOrOutputAmount
+        );
     }
     let (token_account_0, token_account_1, vault_0, vault_1, vault_0_mint, vault_1_mint) =
         if zero_for_one {
