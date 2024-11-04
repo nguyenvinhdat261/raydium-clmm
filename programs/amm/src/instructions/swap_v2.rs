@@ -139,7 +139,7 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
                 );
                 continue;
             }
-            tick_array_states.push_back(AccountLoad::load_data_mut(account_info)?);
+            
         }
 
 
