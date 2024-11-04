@@ -3,7 +3,6 @@ use std::ops::Deref;
 
 use crate::error::ErrorCode;
 use crate::libraries::tick_math;
-use crate::swap::swap_internal;
 use crate::util::*;
 use crate::{states::*, util};
 use anchor_lang::prelude::*;
