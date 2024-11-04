@@ -127,6 +127,7 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
         );
 
         let mut tickarray_bitmap_extension = None;
+        let tick_array_states = &mut VecDeque::new();
 
         let tick_array_bitmap_extension_key = TickArrayBitmapExtension::key(pool_state.key());
         for account_info in remaining_accounts.into_iter() {
@@ -138,9 +139,29 @@ pub fn exact_internal_v2<'c: 'info, 'info>(
                 );
                 continue;
             }
-            
+            tick_array_states.push_back(AccountLoad::load_data_mut(account_info)?);
         }
 
+        (amount_0, amount_1) = swap_internal(
+            &ctx.amm_config,
+            pool_state,
+            tick_array_states,
+            &mut ctx.observation_state.load_mut()?,
+            &tickarray_bitmap_extension,
+            amount_specified,
+            if sqrt_price_limit_x64 == 0 {
+                if zero_for_one {
+                    tick_math::MIN_SQRT_PRICE_X64 + 1
+                } else {
+                    tick_math::MAX_SQRT_PRICE_X64 - 1
+                }
+            } else {
+                sqrt_price_limit_x64
+            },
+            zero_for_one,
+            is_base_input,
+            oracle::block_timestamp(),
+        )?;
 
         #[cfg(feature = "enable-log")]
         msg!(
